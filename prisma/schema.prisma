@@ -1,0 +1,298 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  STUDENT
+  EMPLOYEE
+  ADMIN
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+  MIXED
+}
+
+enum TestStatus {
+  IN_PROGRESS
+  SUBMITTED
+}
+
+enum TestType {
+  ACTUAL  // 20 questions — subscribed students only
+  WARMUP  // 10 questions — all students, limited for unsubscribed
+}
+
+enum TestGroupType {
+  EXAM
+  PRE_EXAM
+  PRACTICE
+}
+
+enum SubscriptionPlanType {
+  SUBJECT
+  SUBJECT_BUNDLE
+  TOPIC
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum QuestionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CORRECTION // sent back for correction
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model User {
+  id                  Int                  @id @default(autoincrement())
+  name                String
+  email               String?              @unique
+  phone               String?              @unique
+  password            String
+  role                Role                 @default(STUDENT)
+  class_level         Int?
+  profile_image       String?
+  is_active           Boolean              @default(true)
+  created_at          DateTime             @default(now())
+  updated_at          DateTime             @updatedAt
+
+  questions           Question[]
+  reviewed_questions  Question[]           @relation("QuestionReviewer")
+  tests               Test[]
+  class_subscriptions ClassSubscription[]
+  test_groups         TestGroup[]          @relation("TestGroupCreator")
+  subscriptions       Subscription[]       @relation("StudentSubscriptions")
+  payments            Payment[]            @relation("StudentPayments")
+
+  @@index([email])
+  @@index([phone])
+  @@index([role])
+  @@map("users")
+}
+
+model ClassSubscription {
+  id          Int      @id @default(autoincrement())
+  student_id  Int
+  class_level Int
+  start_date  DateTime @default(now())
+  end_date    DateTime // 1 year from start
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  student     User     @relation(fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@unique([student_id, class_level])
+  @@index([student_id])
+  @@index([end_date])
+  @@map("class_subscriptions")
+}
+
+model Question {
+  id                  Int                  @id @default(autoincrement())
+  class_level         Int
+  subject             String
+  chapter             String
+  topic               String
+  content             Json
+  correct_option      Int
+  difficulty          Difficulty           @default(MEDIUM)
+  status              QuestionStatus       @default(PENDING)
+  admin_note          String?              // correction/rejection note from admin
+  reviewed_by         Int?                 // admin user id who reviewed
+  reviewed_at         DateTime?            // when review happened
+  is_active           Boolean              @default(true)
+  created_by          Int
+  created_at          DateTime             @default(now())
+  updated_at          DateTime             @updatedAt
+
+  creator             User                 @relation(fields: [created_by], references: [id])
+  reviewer            User?                @relation("QuestionReviewer", fields: [reviewed_by], references: [id])
+  test_group_questions TestGroupQuestion[]
+
+  @@index([class_level])
+  @@index([subject])
+  @@index([class_level, subject])
+  @@index([difficulty])
+  @@index([status])
+  @@index([created_by, status])
+  @@map("questions")
+}
+
+model Test {
+  id              Int        @id @default(autoincrement())
+  student_id      Int
+  class_level     Int
+  subject         String?
+  chapter         String?
+  test_type       TestType   @default(WARMUP)
+  difficulty      Difficulty @default(MIXED)
+  is_free_tier    Boolean    @default(false)
+  status          TestStatus @default(IN_PROGRESS)
+  test_questions  Json
+  answers         Json?
+  score           Int?
+  correct_count   Int?
+  incorrect_count Int?
+  accuracy        Float?
+  test_group_id   Int?
+  time_limit      Int?       // seconds — copied from test group at start
+  started_at      DateTime   @default(now())
+  submitted_at    DateTime?
+  created_at      DateTime   @default(now())
+  updated_at      DateTime   @updatedAt
+
+  student         User       @relation(fields: [student_id], references: [id])
+
+  @@index([student_id])
+  @@index([status])
+  @@index([test_type])
+  @@index([student_id, class_level, subject, test_type]) // for warmup limit check
+  @@map("tests")
+}
+
+// ─── Curriculum (Hierarchical: Class → Subject → Chapter → Topic) ─────────────
+
+model Curriculum {
+  id          Int      @id @default(autoincrement())
+  class_level Int
+  subject     String
+  chapter     String
+  topic       String
+  created_at  DateTime @default(now())
+
+  @@unique([class_level, subject, chapter, topic])
+  @@index([class_level])
+  @@index([class_level, subject])
+  @@index([class_level, subject, chapter])
+  @@map("curriculum")
+}
+
+// ─── Test Groups (Exam / Pre-exam / Practice) ─────────────────────────────────
+
+model TestGroup {
+  id            Int               @id @default(autoincrement())
+  name          String
+  group_type    TestGroupType
+  class_level   Int
+  subject       String
+  chapter       String
+  topic         String
+  time_limit    Int               // total seconds
+  is_paid       Boolean           @default(false)
+  is_active     Boolean           @default(true)
+  created_by    Int
+  created_at    DateTime          @default(now())
+  updated_at    DateTime          @updatedAt
+
+  creator       User              @relation("TestGroupCreator", fields: [created_by], references: [id])
+  questions     TestGroupQuestion[]
+
+  @@index([class_level, topic])
+  @@index([class_level, subject])
+  @@map("test_groups")
+}
+
+model TestGroupQuestion {
+  id            Int       @id @default(autoincrement())
+  test_group_id Int
+  question_id   Int
+  created_at    DateTime  @default(now())
+
+  test_group    TestGroup @relation(fields: [test_group_id], references: [id], onDelete: Cascade)
+  question      Question  @relation(fields: [question_id], references: [id], onDelete: Cascade)
+
+  @@unique([test_group_id, question_id])
+  @@map("test_group_questions")
+}
+
+// ─── Subscription Plans (Admin-managed) ───────────────────────────────────────
+
+model SubscriptionPlan {
+  id             Int                      @id @default(autoincrement())
+  name           String
+  type           SubscriptionPlanType
+  billing_cycle  BillingCycle
+  price          Float
+  offer_price    Float?
+  offer_end_date DateTime?
+  is_active      Boolean                  @default(true)
+  topic          String?                  // for TOPIC type
+  class_level    Int?
+  created_at     DateTime                 @default(now())
+  updated_at     DateTime                 @updatedAt
+
+  subjects       SubscriptionPlanSubject[]
+  subscriptions  Subscription[]
+
+  @@map("subscription_plans")
+}
+
+model SubscriptionPlanSubject {
+  id      Int              @id @default(autoincrement())
+  plan_id Int
+  subject String
+
+  plan    SubscriptionPlan @relation(fields: [plan_id], references: [id], onDelete: Cascade)
+
+  @@unique([plan_id, subject])
+  @@map("subscription_plan_subjects")
+}
+
+// ─── Student Subscriptions ────────────────────────────────────────────────────
+
+model Subscription {
+  id         Int              @id @default(autoincrement())
+  student_id Int
+  plan_id    Int
+  start_date DateTime         @default(now())
+  end_date   DateTime
+  is_active  Boolean          @default(true)
+  created_at DateTime         @default(now())
+
+  student    User             @relation("StudentSubscriptions", fields: [student_id], references: [id])
+  plan       SubscriptionPlan @relation(fields: [plan_id], references: [id])
+
+  @@index([student_id])
+  @@map("subscriptions")
+}
+
+// ─── Payment Records (Paytm) ─────────────────────────────────────────────────
+
+model Payment {
+  id              Int           @id @default(autoincrement())
+  student_id      Int
+  plan_id         Int
+  subscription_id Int?
+  amount          Float
+  paytm_order_id  String        @unique
+  paytm_txn_id    String?
+  status          PaymentStatus @default(PENDING)
+  created_at      DateTime      @default(now())
+  updated_at      DateTime      @updatedAt
+
+  student         User          @relation("StudentPayments", fields: [student_id], references: [id])
+
+  @@index([student_id])
+  @@map("payments")
+}
